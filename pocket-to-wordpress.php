@@ -113,16 +113,16 @@ function get_pocket_items_html( $args = array() ) {
  */
 function get_pocket_item_html( $item ) {
 
-    // Make sure it's formatted
+    // Make sure the item is formatted
     if ( ! isset( $item->is_formatted ) )
         $item = get_pocket_item_formatted_data( $item );
 
-    // Make sure we at least have an ID and a title
-    if ( ! ( isset( $item->ID ) && isset( $item->title ) ) )
+    // Make sure we at least have an item ID and a title
+    if ( ! ( isset( $item->item_id ) && isset( $item->title ) ) )
         return null;
 
     // Start the item
-    $pocket_html = '<div id="pocket-' . $item->ID . '" class="pocket-item' . ( $item->has_image && $item->image_src ? ' has-image' : NULL ) . '">';
+    $pocket_html = '<div id="pocket-' . $item->item_id . '" class="pocket-item' . ( $item->has_image && $item->image_src ? ' has-image' : NULL ) . '">';
 
     // Add image
     $pocket_html .= $item->has_image && $item->image_src ? '<div class="pocket-image" style="background-image: url(' . esc_url( $item->image_src ) . ');"></div>' : NULL;
@@ -205,9 +205,111 @@ function get_pocket_item_html( $item ) {
 
     $pocket_html .= '</div> <!-- .pocket-main -->';
 
-    $pocket_html .= '</div><!-- #pocket-' . $item->ID . ' -->';
+    $pocket_html .= '</div><!-- #pocket-' . $item->item_id . ' -->';
 
     return $pocket_html;
+}
+
+/**
+ * Inserts a Pocket item into a WordPress post.
+ *
+ * @access public
+ * @param  array - $item - the item which holds the data we need to format
+ * @param  array - $args - the arguments for creating the post
+ * @return boolean - whether or not the post was created
+ */
+function insert_pocket_item_to_post( $item, $args = array() ) {
+    global $wpdb;
+
+    // Handle the arguments
+    $defaults = array(
+        'post_type'         => 'post',
+        'post_author'       => null,
+        'post_status'       => 'publish',
+        'tags_taxonomy_name'=> 'post_tag',
+    );
+    $args = wp_parse_args( $args, $defaults );
+
+    // Make sure the item is formatted
+    if ( ! isset( $item->is_formatted ) )
+        $item = get_pocket_item_formatted_data( $item );
+
+    // See if a post with this item ID already exists
+    $current_post_id = $wpdb->get_var( "SELECT posts.ID FROM {$wpdb->postmeta} pmeta INNER JOIN {$wpdb->posts} posts ON posts.ID = pmeta.post_id and posts.post_type = '{$args['post_type']}' AND posts.post_status = 'publish' WHERE pmeta.meta_key = '_pocket_item_id' AND pmeta.meta_value = '{$item->item_id}'" );
+
+    // If it already exists, get out of here
+    if ( $current_post_id > 0 )
+        return false;
+
+    // Create the post args
+    $post_args = array(
+        'post_type'     => $args[ 'post_type' ],
+        'post_author'   => $args[ 'post_author' ],
+        'post_status'   => $args[ 'post_status' ],
+        'post_title'    => apply_filters( 'pocket_item_post_title', $item->title, $item, $args ),
+        'post_name'     => apply_filters( 'pocket_item_post_name', '', $item, $args ),
+        'post_content'  => apply_filters( 'pocket_item_post_content', $item->excerpt, $item, $args ),
+    );
+
+    // When was the post added? - They send GMT
+    if ( isset( $item->time_added ) ) {
+        $post_args[ 'post_date_gmt' ] = date( 'Y-m-d H:i:s', $item->time_added );
+    }
+
+    // Filter the tags taxonomy name
+    $tags_taxonomy_name = apply_filters( 'pocket_item_tags_taxonomy_name', $args[ 'tags_taxonomy_name' ], $item, $args );
+
+    // Store the tags
+    if ( isset( $item->tags ) && is_array( $item->tags ) ) {
+
+        // Build tags array
+        $tags_array = array();
+
+        // Collect the tags
+        foreach( $item->tags as $tag ) {
+            $tags_array[] = $tag[ 'tag' ];
+        }
+
+        // Add tags
+        if ( ! empty( $tags_array ) ) {
+            $post_args[ 'tax_input' ] = array(
+                $tags_taxonomy_name => $tags_array,
+            );
+        }
+
+    }
+
+    // Insert the post
+    if ( $new_post_id = wp_insert_post( $post_args ) ) {
+
+        // @TODO
+        // Store authors separately?
+
+        // Store item post meta
+        $item_post_meta = array(
+            '_pocket_item_id'           => $item->item_id,
+            '_pocket_item_url'          => $item->url,
+            '_pocket_item_word_count'   => $item->word_count,
+            '_pocket_item_time_read'    => $item->time_read,
+            '_pocket_item_is_article'   => $item->is_article ? true : false,
+            '_pocket_item_is_favorite'  => $item->favorite ? true : false,
+            '_pocket_item_has_video'    => $item->has_video ? true : false,
+            '_pocket_item_is_video'     => $item->is_video ? true : false,
+            '_pocket_item_has_image'    => $item->has_image ? true : false,
+            '_pocket_item_is_image'     => $item->is_image ? true : false,
+            '_pocket_item_image_src'    => $item->image_src,
+            '_pocket_item_data'         => $item,
+        );
+
+        foreach( $item_post_meta as $meta_key => $meta_value ) {
+            add_post_meta( $new_post_id, $meta_key, $meta_value, true );
+        }
+
+        return true;
+
+    }
+
+    return false;
 }
 
 /**
@@ -224,7 +326,7 @@ function get_pocket_item_formatted_data( $item ) {
 
     // Create the data
     $data = (object) array(
-        'ID'            => ! empty( $item->item_id )            ? $item->item_id        : null,
+        'item_id'       => ! empty( $item->item_id )            ? $item->item_id        : null,
         'resolved_id'   => ! empty( $item->resolved_id )        ? $item->resolved_id    : null,
         'url'           => ! empty( $item->given_url )          ? $item->given_url      : null,
         'resolved_url'  => ! empty( $item->resolved_url )       ? $item->resolved_url   : null,
@@ -240,7 +342,9 @@ function get_pocket_item_formatted_data( $item ) {
         'authors'       => ! empty( $item->authors )            ? $item->authors        : false,
         'is_article'    => ! empty( $item->is_article )         ? $item->is_article     : false,
         'has_video'     => ! empty( $item->has_video )          ? $item->has_video      : false,
+        'is_video'      => ! empty( $item->has_video ) && 2 == $item->has_video ? true  : false,
         'has_image'     => ! empty( $item->has_image )          ? $item->has_image      : false,
+        'is_image'      => ! empty( $item->has_image ) && 2 == $item->has_image ? true  : false,
         'excerpt'       => ! empty( $item->excerpt )            ? $item->excerpt        : null,
         'tags'          => ! empty( $item->tags )               ? $item->tags           : false,
         'image_src'     => false,
